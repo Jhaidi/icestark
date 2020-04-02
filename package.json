@@ -35,7 +35,8 @@
     "url": "git+https://github.com/ice-lab/icestark.git"
   },
   "peerDependencies": {
-    "react": ">=15.0.0"
+    "react": ">=15.0.0",
+    "react-dom": ">=15.0.0"
   },
   "dependencies": {
     "lodash.isequal": "^4.5.0",

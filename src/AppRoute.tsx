@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { AppHistory } from './appHistory';
 import renderComponent from './util/renderComponent';
+import renderModules, { Module, RenderProps } from './util/renderModules';
 import { appendAssets, emptyAssets, cacheAssets, getEntryAssets, getUrlAssets } from './util/handleAssets';
 import { setCache, getCache } from './util/cache';
 import { callAppEnter, callAppLeave, cacheApp, isCached } from './util/appLifeCycle';
@@ -11,6 +12,7 @@ import isEqual = require('lodash.isequal');
 interface AppRouteState {
   cssLoading: boolean;
   showComponent: boolean;
+  modules: any;
 }
 
 // "slash" - hashes like #/ and #/sunshine/lollipops
@@ -53,6 +55,7 @@ export interface AppConfig {
   component?: React.ReactElement;
   render?: (props?: AppRouteComponentProps) => React.ReactElement;
   cache?: boolean;
+  modules?: Module[];
 }
 
 // from AppRouter
@@ -76,6 +79,14 @@ export function converArray2String(list: string | string[]) {
   return String(list);
 }
 
+export function converObject2String(obj: any) {
+  if (obj && typeof obj === 'object') {
+    return JSON.stringify(obj);
+  }
+
+  return String(obj);
+}
+
 /**
  * Get app config from AppRoute props
  */
@@ -96,6 +107,7 @@ export default class AppRoute extends React.Component<AppRouteProps, AppRouteSta
   state = {
     cssLoading: false,
     showComponent: false,
+    modules: [],
   };
 
   private myRefBase: HTMLDivElement = null;
@@ -117,7 +129,7 @@ export default class AppRoute extends React.Component<AppRouteProps, AppRouteSta
   }
 
   shouldComponentUpdate(nextProps, nextState) {
-    const { path, url, title, rootId, componentProps } = this.props;
+    const { path, url, title, rootId, componentProps, modules } = this.props;
     const { cssLoading, showComponent } = this.state;
     // re-render and callCapturedEventListeners if componentProps is changed
     if ((nextProps.component || nextProps.render && typeof nextProps.render === 'function') &&
@@ -127,6 +139,7 @@ export default class AppRoute extends React.Component<AppRouteProps, AppRouteSta
     } else if (
       converArray2String(path) === converArray2String(nextProps.path) &&
       converArray2String(url) === converArray2String(nextProps.url) &&
+      converObject2String(modules) === converObject2String(nextProps.modules) &&
       title === nextProps.title &&
       rootId === nextProps.rootId &&
       cssLoading === nextState.cssLoading &&
@@ -177,16 +190,16 @@ export default class AppRoute extends React.Component<AppRouteProps, AppRouteSta
    * Load assets and render sub-application
    */
   renderChild = (): void => {
-    const { rootId, component, render } = this.props;
+    const { rootId, component, render, modules } = this.props;
 
     // cache prev app asset before load next app
     if (this.prevAppConfig && this.prevAppConfig.cache) {
       cacheAssets(this.getCacheKey(this.prevAppConfig));
     }
 
-    // if component / render exists,
+    // if component / render & !modules exists,
     // set showComponent to confirm capturedEventListeners triggered at the right time
-    if (component || (render && typeof render === 'function')) {
+    if (component || (render && !modules && typeof render === 'function')) {
       this.triggerPrevAppLeave();
 
       this.triggerOnAppEnter();
@@ -196,7 +209,7 @@ export default class AppRoute extends React.Component<AppRouteProps, AppRouteSta
     }
 
     const myBase: HTMLElement = this.myRefBase;
-    if (!myBase) return;
+    if (!myBase && !modules) return;
 
     this.triggerPrevAppLeave();
 
@@ -219,6 +232,7 @@ export default class AppRoute extends React.Component<AppRouteProps, AppRouteSta
       triggerError,
       shouldAssetsRemove,
       cache,
+      modules,
     } = this.props;
     const assetsCacheKey = this.getCacheKey();
     const cached = cache && isCached(assetsCacheKey);;
@@ -266,10 +280,15 @@ export default class AppRoute extends React.Component<AppRouteProps, AppRouteSta
       } else if (url){
         const urls = Array.isArray(url) ? url : [url];
         appAssets = getUrlAssets(urls);
+      } else if (modules) {
+        const urls = modules.reduce((res, module) => res.concat(module.url), []);
+        appAssets = getUrlAssets(urls);
       }
+
       if (appAssets && !cached) {
         await appendAssets(appAssets);
       }
+      
       // if AppRoute is unmounted, or current app is not the latest app, cancel all operations
       if (this.unmounted || this.prevAppConfig !== currentAppConfig) return;
       if (cache) {
@@ -282,9 +301,44 @@ export default class AppRoute extends React.Component<AppRouteProps, AppRouteSta
 
       // cancel loading after handleAssets
       handleLoading(false);
+
+      // if modules
+      if (modules) {
+        this.setState({
+          showComponent: true,
+          modules: modules.map((module) => {
+            const moduleAsset = window[module.name];
+
+            return {
+              component: moduleAsset.default || moduleAsset,
+              mount: moduleAsset.mount,
+              unmount: moduleAsset.unmount,
+              ...module,
+            };
+          }),
+        });
+      }
     } catch (error) {
       handleError(error.message);
     }
+  };
+
+  loadNextModules =  async () => {
+    const { modules } = this.props;
+    const urls = modules.reduce((res, module) => res.concat(module.url), []);
+    const assets = await getUrlAssets(urls);
+    await appendAssets(assets);
+
+    // 设置获取到的模块
+    this.setState({
+      showComponent: true,
+      modules: modules.map((module) => {
+        return {
+          ...module,
+          component: window[module.name],
+        };
+      }),
+    });
   };
 
   reCreateElementInBase = (elementId: string): HTMLElement => {
@@ -340,14 +394,18 @@ export default class AppRoute extends React.Component<AppRouteProps, AppRouteSta
   };
 
   render() {
-    const { component, render, componentProps } = this.props;
+    const { component, render, componentProps, modules } = this.props;
     const { cssLoading, showComponent } = this.state;
 
     if (component) {
       return showComponent ? renderComponent(component, componentProps) : null;
     }
 
-    if (render && typeof render === 'function') {
+    if (modules) {
+      return showComponent ? renderModules(this.state.modules, render) : null;
+    }
+
+    if (render && !modules && typeof render === 'function') {
       return showComponent ? render(componentProps) : null;
     }
 
